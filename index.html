@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#def7fd" />
+  <title>Confirmación | Baby Shower Matteo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Fredoka:wght@500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <main class="page-shell">
+    <div class="bubbles" aria-hidden="true">
+      <span></span><span></span><span></span><span></span><span></span>
+    </div>
+
+    <section class="hero">
+      <div class="turtle" aria-hidden="true">
+        <img src="img/tortuga-matteo.png" alt="" />
+      </div>
+      <p class="eyebrow">Baby Shower</p>
+      <h1>Matteo Giosuè</h1>
+      <p class="subtitle">Una pequeña tortuga está en camino</p>
+      <div class="event-pill">Domingo 4 de octubre</div>
+    </section>
+
+    <section class="card" id="searchCard">
+      <div class="step-badge">1</div>
+      <h2>Confirma tu asistencia</h2>
+      <p class="muted">Escribe tu nombre para encontrar tu invitación.</p>
+
+      <form id="searchForm" autocomplete="off">
+        <label for="guestName">Tu nombre</label>
+        <div class="search-combobox">
+          <div class="input-wrap">
+            <span class="input-icon">♡</span>
+            <input id="guestName" name="guestName" type="text" placeholder="Ej. Matteo Giosuè" required aria-autocomplete="list" aria-controls="nameSuggestions" aria-expanded="false" />
+          </div>
+          <div id="nameSuggestions" class="suggestions hidden" role="listbox" aria-label="Coincidencias de invitados"></div>
+        </div>
+        <button class="btn btn-primary" type="submit">
+          <span>Buscar mi invitación</span>
+          <span aria-hidden="true">→</span>
+        </button>
+      </form>
+
+      <div id="searchMessage" class="message hidden" role="status"></div>
+    </section>
+
+    <section class="card hidden" id="rsvpCard">
+      <div class="step-badge">2</div>
+      <p class="eyebrow small">Invitación encontrada</p>
+      <h2 id="welcomeName">¡Hola!</h2>
+      <p class="muted">Nos encantaría contar contigo en este día tan especial.</p>
+
+      <div class="invite-summary single">
+        <div>
+          <span class="summary-label">Estado de tu respuesta</span>
+          <strong id="guestStatus">Pendiente</strong>
+        </div>
+      </div>
+
+      <form id="rsvpForm">
+        <fieldset>
+          <legend>¿Podrás acompañarnos?</legend>
+          <div class="choice-grid">
+            <label class="choice">
+              <input type="radio" name="attendance" value="si" required>
+              <span class="choice-card">
+                <span class="choice-emoji">💙</span>
+                <strong>Sí, asistiré</strong>
+                <small>¡Nos vemos allí!</small>
+              </span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="attendance" value="no" required>
+              <span class="choice-card">
+                <span class="choice-emoji">🤍</span>
+                <strong>No podré asistir</strong>
+                <small>Gracias por avisarnos</small>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
+        <label for="guestNote">Mensaje opcional</label>
+        <textarea id="guestNote" rows="3" maxlength="180" placeholder="Déjanos un mensajito para Matteo 💙"></textarea>
+
+        <button class="btn btn-primary" type="submit">Confirmar respuesta</button>
+        <button class="btn btn-ghost" id="backBtn" type="button">Buscar otro nombre</button>
+      </form>
+
+      <div id="rsvpMessage" class="message hidden" role="status"></div>
+    </section>
+
+    <section class="card success-card hidden" id="successCard">
+      <div class="success-icon">✓</div>
+      <p class="eyebrow small">Respuesta registrada</p>
+      <h2 id="successTitle">¡Muchas gracias!</h2>
+      <p id="successText" class="muted"></p>
+      <button class="btn btn-ghost" id="restartBtn" type="button">Volver al inicio</button>
+    </section>
+
+    <footer>
+      <span>Con cariño, la familia de Matteo</span>
+      <img class="tiny-turtle" src="img/tortuga-matteo.png" alt="" aria-hidden="true" />
+    </footer>
+  </main>
+
+  <script src="js/config.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

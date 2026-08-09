@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#def7fd" />
+  <title>Panel RSVP | Matteo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Fredoka:wght@500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <main class="admin-shell">
+    <header class="admin-head">
+      <div class="admin-brand">
+        <img src="img/tortuga-matteo.png" alt="Tortuguita de Matteo" />
+        <div>
+          <p class="eyebrow">Panel de administración</p>
+          <h1>Confirmaciones · Matteo</h1>
+        </div>
+      </div>
+    </header>
+
+    <p class="muted">Este panel está conectado a <strong>Google Sheets</strong>. Los cambios que hagas aquí se aplican a la lista real de invitados.</p>
+
+    <div class="stats">
+      <div class="stat"><span>Invitados</span><strong id="statInvites">0</strong></div>
+      <div class="stat"><span>Confirmados</span><strong id="statConfirmed">0</strong></div>
+      <div class="stat"><span>No asisten</span><strong id="statNo">0</strong></div>
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <span class="hint">Puedes ordenar las columnas con las flechas. Editar y borrar modifica directamente Google Sheets.</span>
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-ghost btn-compact" id="selectAllBtn" type="button">Seleccionar todos</button>
+        <span class="selection-count" id="selectionCount">0 seleccionados</span>
+        <button class="btn btn-danger-soft btn-compact" id="deleteSelected" type="button" disabled>Borrar seleccionados</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th><input class="check" type="checkbox" id="selectAll" aria-label="Seleccionar todos"></th>
+            <th><button class="sort-btn" type="button" data-sort="id" aria-label="Ordenar por ID">ID <span class="sort-arrows" aria-hidden="true">↕</span></button></th>
+            <th><button class="sort-btn" type="button" data-sort="name" aria-label="Ordenar por nombre">Nombre <span class="sort-arrows" aria-hidden="true">↕</span></button></th>
+            <th><button class="sort-btn" type="button" data-sort="status" aria-label="Ordenar por estado">Estado <span class="sort-arrows" aria-hidden="true">↕</span></button></th>
+            <th><button class="sort-btn" type="button" data-sort="note" aria-label="Ordenar por mensaje">Mensaje <span class="sort-arrows" aria-hidden="true">↕</span></button></th>
+            <th><button class="sort-btn" type="button" data-sort="updatedAt" aria-label="Ordenar por actualización">Actualización <span class="sort-arrows" aria-hidden="true">↕</span></button></th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="guestRows"></tbody>
+      </table>
+      <div id="emptyState" class="empty-state hidden">No hay invitados para mostrar.</div>
+    </div>
+  </main>
+
+  <div class="modal-backdrop hidden" id="editModal" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+    <div class="modal-card">
+      <p class="eyebrow small">Editar invitado</p>
+      <h2 id="editTitle">Modificar registro</h2>
+      <form id="editForm">
+        <div class="modal-fields">
+          <label>
+            Nombre
+            <input type="text" id="editName" required />
+          </label>
+          <label>
+            Estado
+            <select id="editStatus">
+              <option value="Pendiente">Pendiente</option>
+              <option value="Confirmado">Confirmado</option>
+              <option value="No asiste">No asiste</option>
+            </select>
+          </label>
+          <label>
+            Mensaje
+            <textarea id="editNote" rows="3" maxlength="180" placeholder="Mensaje opcional"></textarea>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" type="button" data-close-modal>Cancelar</button>
+          <button class="btn btn-primary" type="submit">Guardar cambios</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop hidden" id="deleteModal" role="dialog" aria-modal="true" aria-labelledby="deleteTitle">
+    <div class="modal-card">
+      <p class="eyebrow small">Confirmar borrado</p>
+      <h2 id="deleteTitle">¿Seguro?</h2>
+      <p id="deleteText"></p>
+      <div class="modal-warning">Esta acción no se ejecutará hasta que presiones el botón rojo de confirmación.</div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" type="button" data-close-modal>Cancelar</button>
+        <button class="btn btn-danger" id="confirmDelete" type="button">Sí, borrar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="js/admin.js"></script>
+</body>
+</html>
