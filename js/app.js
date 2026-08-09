@@ -14,87 +14,15 @@ const suggestionsBox = $("#nameSuggestions");
 let selectedGuest = null;
 let currentMatches = [];
 let suggestionTimer = null;
-let localGuests = [];
-let localDataError = null;
-const localReady = CONFIG.MODE === "local"
-  ? window.RSVP_DATA.loadGuests()
-      .then(guests => { localGuests = guests; return guests; })
-      .catch(error => { localDataError = error; throw error; })
-  : Promise.resolve([]);
+let activeSearchController = null;
 
 function normalizeName(value = "") {
-  return value
+  return String(value)
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim()
     .replace(/\s+/g, " ");
-}
-
-function levenshtein(a, b) {
-  if (a === b) return 0;
-  if (!a.length) return b.length;
-  if (!b.length) return a.length;
-
-  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    const current = [i];
-    for (let j = 1; j <= b.length; j++) {
-      current[j] = Math.min(
-        current[j - 1] + 1,
-        previous[j] + 1,
-        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
-      );
-    }
-    previous = current;
-  }
-  return previous[b.length];
-}
-
-function matchScore(name, query) {
-  const n = normalizeName(name);
-  const q = normalizeName(query);
-  if (!q) return 0;
-  if (n === q) return 1000;
-  if (n.startsWith(q)) return 900 - (n.length - q.length);
-  if (n.includes(q)) return 800 - n.indexOf(q);
-
-  const nameWords = n.split(" ");
-  const queryWords = q.split(" ");
-  let score = 0;
-  let matchedWords = 0;
-
-  for (const qWord of queryWords) {
-    let best = 0;
-    for (const nWord of nameWords) {
-      if (nWord === qWord) best = Math.max(best, 170);
-      else if (nWord.startsWith(qWord)) best = Math.max(best, 145 - Math.abs(nWord.length - qWord.length));
-      else if (qWord.length >= 3 && nWord.includes(qWord)) best = Math.max(best, 120);
-      else {
-        const distance = levenshtein(nWord, qWord);
-        const maxLen = Math.max(nWord.length, qWord.length);
-        const similarity = 1 - distance / maxLen;
-        if (similarity >= 0.68) best = Math.max(best, Math.round(similarity * 100));
-      }
-    }
-    if (best > 0) matchedWords += 1;
-    score += best;
-  }
-
-  if (queryWords.length > 1 && matchedWords < queryWords.length) return Math.round(score * 0.25);
-  return score;
-}
-
-function rankGuests(database, query, limit = 5) {
-  const q = normalizeName(query);
-  if (q.length < 2) return [];
-
-  return database
-    .map(guest => ({ guest, score: matchScore(guest.name, q) }))
-    .filter(item => item.score >= 70)
-    .sort((a, b) => b.score - a.score || a.guest.name.localeCompare(b.guest.name, "es"))
-    .slice(0, limit)
-    .map(item => item.guest);
 }
 
 function showMessage(el, text, type = "info") {
@@ -113,298 +41,81 @@ function setLoading(button, state, label) {
   button.innerHTML = state ? label : button.dataset.original;
 }
 
-let jsonpSequence = 0;
-let bridgeSequence = 0;
-
-// Safari/iOS puede ser más estricto con scripts JSONP de terceros.
-// En esos navegadores usamos un iframe oculto como puente con Apps Script.
-function prefersIframeBridge() {
-  const ua = navigator.userAgent || "";
-  const isiOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  const isSafari = /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|Chrome|Chromium|Android/i.test(ua);
-  return isiOS || isSafari;
-}
-
-function iframeBridgeRequest(baseUrl, params = {}) {
-  return new Promise((resolve, reject) => {
-    bridgeSequence += 1;
-    const requestId = `bridge${Date.now()}${bridgeSequence}`;
-    const iframe = document.createElement("iframe");
-    const url = new URL(baseUrl);
-    let finished = false;
-
-    Object.entries(params).forEach(([key, value]) => {
+function apiUrl(params = {}) {
+  const url = new URL(CONFIG.API_URL);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
       url.searchParams.set(key, String(value));
-    });
-    url.searchParams.set("bridge", "1");
-    url.searchParams.set("requestId", requestId);
-    url.searchParams.set("origin", window.location.origin);
-
-    iframe.style.display = "none";
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.src = url.toString();
-
-    function cleanup() {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
-      window.removeEventListener("message", onMessage);
-      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
     }
-
-    function onMessage(event) {
-      const payload = event.data;
-      if (!payload || payload.type !== "matteo-rsvp-bridge") return;
-      if (payload.requestId !== requestId) return;
-      cleanup();
-      resolve(payload.data);
-    }
-
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error("No se pudo conectar con la lista de invitados."));
-    }, 20000);
-
-    window.addEventListener("message", onMessage);
-    iframe.addEventListener("error", () => {
-      cleanup();
-      reject(new Error("No se pudo conectar con la lista de invitados."));
-    });
-
-    document.body.appendChild(iframe);
   });
+  return url.toString();
 }
 
-async function readApi(baseUrl, params = {}) {
-  // Safari/iPhone: evitamos JSONP desde el inicio para no depender de
-  // protecciones de carga de scripts entre sitios.
-  if (prefersIframeBridge()) {
-    return iframeBridgeRequest(baseUrl, params);
-  }
-
-  // Resto de navegadores: JSONP sigue siendo más liviano. Si algo lo
-  // bloquea (por ejemplo un bloqueador), probamos el puente automáticamente.
-  try {
-    return await jsonpRequest(baseUrl, params, 7000);
-  } catch (_) {
-    return iframeBridgeRequest(baseUrl, params);
-  }
-}
-
-function jsonpRequest(baseUrl, params = {}, timeoutMs = 25000) {
-  return new Promise((resolve, reject) => {
-    jsonpSequence += 1;
-
-    // Callback deliberadamente simple: solo letras y números.
-    // Apps Script lo devuelve como: rsvpCallback123({...})
-    const callbackName = `rsvpCallback${Date.now()}${jsonpSequence}`;
-    const script = document.createElement("script");
-    const url = new URL(baseUrl);
-    let finished = false;
-
-    Object.entries(params).forEach(([key, value]) => {
-      url.searchParams.set(key, String(value));
-    });
-    url.searchParams.set("prefix", callbackName);
-
-    function cleanup() {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
-      try { delete window[callbackName]; } catch (_) { window[callbackName] = undefined; }
-      if (script.parentNode) script.parentNode.removeChild(script);
-    }
-
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error("La conexión está tardando demasiado. Intenta nuevamente."));
-    }, timeoutMs);
-
-    window[callbackName] = function (data) {
-      if (finished) return;
-      cleanup();
-      resolve(data);
-    };
-
-    script.type = "text/javascript";
-    script.async = true;
-    script.onerror = () => {
-      if (finished) return;
-      cleanup();
-      reject(new Error("No se pudo conectar con la lista de invitados."));
-    };
-
-    script.src = url.toString();
-    document.body.appendChild(script);
+async function apiGet(params = {}, options = {}) {
+  const response = await fetch(apiUrl(params), {
+    method: "GET",
+    mode: "cors",
+    cache: "no-store",
+    signal: options.signal,
+    headers: { "Accept": "application/json" }
   });
+
+  if (!response.ok) {
+    throw new Error(`No se pudo conectar con la base de datos (${response.status}).`);
+  }
+
+  const data = await response.json();
+  if (!data || data.ok !== true) {
+    throw new Error((data && data.error) || "La base de datos respondió con un error.");
+  }
+  return data;
 }
 
-async function searchGuests(name) {
-  if (CONFIG.MODE === "local") {
-    if (localDataError) throw localDataError;
-    await localReady;
-    return rankGuests(localGuests, name);
+async function apiPost(payload) {
+  const response = await fetch(CONFIG.API_URL, {
+    method: "POST",
+    mode: "cors",
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    throw new Error(`No se pudo guardar la respuesta (${response.status}).`);
   }
 
-  const data = await readApi(CONFIG.GOOGLE_SCRIPT_URL, { buscar: name });
-
-  if (!data || !data.ok) {
-    throw new Error((data && data.error) || "No se pudo realizar la búsqueda.");
+  const data = await response.json();
+  if (!data || data.ok !== true) {
+    throw new Error((data && data.error) || "No se pudo guardar la respuesta.");
   }
+  return data;
+}
 
+async function searchGuests(name, signal) {
+  const data = await apiGet({ buscar: name }, { signal });
   const resultados = Array.isArray(data.resultados) ? data.resultados : [];
-  return resultados.map(guest => ({
-    id: String(guest.id || ""),
-    name: String(guest.nombre || ""),
-    status: "Pendiente",
-    note: "",
-    updatedAt: ""
-  })).filter(guest => guest.id && guest.name);
-}
 
-function postRsvpWithHiddenForm(payload) {
-  return new Promise((resolve, reject) => {
-    const frameName = `rsvpPostFrame_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-    const iframe = document.createElement("iframe");
-    const form = document.createElement("form");
-
-    iframe.name = frameName;
-    iframe.style.display = "none";
-    iframe.setAttribute("aria-hidden", "true");
-
-    form.method = "POST";
-    form.action = CONFIG.GOOGLE_SCRIPT_URL;
-    form.target = frameName;
-    form.style.display = "none";
-
-    const fields = {
-      id: payload.id,
-      estado: payload.status,
-      mensaje: payload.note || ""
-    };
-
-    Object.entries(fields).forEach(([name, value]) => {
-      const input = document.createElement("input");
-      input.type = "hidden";
-      input.name = name;
-      input.value = String(value ?? "");
-      form.appendChild(input);
-    });
-
-    let submitted = false;
-    let cleaned = false;
-
-    function cleanup() {
-      if (cleaned) return;
-      cleaned = true;
-      setTimeout(() => {
-        if (form.parentNode) form.parentNode.removeChild(form);
-        if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
-      }, 1500);
-    }
-
-    iframe.addEventListener("load", () => {
-      if (!submitted) return;
-      cleanup();
-      resolve();
-    });
-
-    iframe.addEventListener("error", () => {
-      cleanup();
-      reject(new Error("No se pudo enviar la confirmación."));
-    });
-
-    document.body.appendChild(iframe);
-    document.body.appendChild(form);
-
-    try {
-      submitted = true;
-      form.submit();
-    } catch (error) {
-      cleanup();
-      reject(error);
-      return;
-    }
-
-    // Aunque el navegador no permita inspeccionar la respuesta por ser otro dominio,
-    // el POST ya fue enviado. Damos tiempo a Apps Script para procesarlo y luego
-    // verificamos el resultado por JSONP.
-    setTimeout(() => {
-      if (!cleaned) {
-        cleanup();
-        resolve();
-      }
-    }, 2200);
-  });
-}
-
-async function getRsvpStatus(id) {
-  const data = await readApi(CONFIG.GOOGLE_SCRIPT_URL, {
-    accion: "estado",
-    id
-  });
-
-  if (!data || !data.ok) {
-    throw new Error((data && data.error) || "No se pudo verificar la confirmación.");
-  }
-
-  return data.invitado || null;
-}
-
-async function verifyRsvp(id, expectedStatus, expectedNote) {
-  const waits = [500, 900, 1400, 2200];
-
-  for (const wait of waits) {
-    await new Promise(resolve => setTimeout(resolve, wait));
-    try {
-      const guest = await getRsvpStatus(id);
-      if (!guest) continue;
-
-      const statusMatches = String(guest.estado || "") === String(expectedStatus || "");
-      const noteMatches = String(guest.mensaje || "") === String(expectedNote || "");
-
-      if (statusMatches && noteMatches) return guest;
-    } catch (_) {
-      // Reintentamos unas veces porque Sheets puede tardar un instante en reflejar el cambio.
-    }
-  }
-
-  throw new Error("La respuesta no llegó a Google Sheets. Inténtalo nuevamente.");
+  return resultados
+    .map(guest => ({
+      id: String(guest.id || ""),
+      name: String(guest.nombre || ""),
+      status: "Pendiente",
+      note: "",
+      updatedAt: ""
+    }))
+    .filter(guest => guest.id && guest.name);
 }
 
 async function saveRsvp(payload) {
-  if (CONFIG.MODE === "local") {
-    await localReady;
-    const index = localGuests.findIndex(g => g.id === payload.id);
-    if (index < 0) throw new Error("Invitación no encontrada.");
-
-    const updatedAt = new Date().toISOString();
-    const status = payload.attendance === "si" ? "Confirmado" : "No asiste";
-    window.RSVP_DATA.updateGuest(payload.id, {
-      status,
-      note: payload.note,
-      updatedAt
-    });
-
-    localGuests[index] = {
-      ...localGuests[index],
-      status,
-      note: payload.note,
-      updatedAt
-    };
-    return { ok: true };
-  }
-
-  const status = payload.attendance === "si" ? "Confirmado" : "No asiste";
-
-  await postRsvpWithHiddenForm({
+  return apiPost({
+    accion: "confirmar",
     id: payload.id,
-    status,
-    note: payload.note || ""
+    asistencia: payload.attendance,
+    mensaje: payload.note || ""
   });
-
-  const savedGuest = await verifyRsvp(payload.id, status, payload.note || "");
-  return { ok: true, invitado: savedGuest };
 }
 
 function hideSuggestions() {
@@ -424,11 +135,21 @@ function renderSuggestions(matches) {
   suggestionsBox.innerHTML = matches.map((guest, index) => `
     <button class="suggestion-item" type="button" role="option" data-index="${index}">
       <span class="suggestion-icon">♡</span>
-      <span>${guest.name}</span>
+      <span>${escapeHtml(guest.name)}</span>
     </button>
   `).join("");
+
   suggestionsBox.classList.remove("hidden");
   guestNameInput.setAttribute("aria-expanded", "true");
+}
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function openRsvp(guest) {
@@ -437,7 +158,6 @@ function openRsvp(guest) {
   $("#guestStatus").textContent = guest.status || "Pendiente";
 
   rsvpForm.reset();
-  if (guest.note) $("#guestNote").value = guest.note;
   hideMessage(rsvpMessage);
   hideSuggestions();
 
@@ -466,22 +186,21 @@ async function updateSuggestions() {
 
   if (normalizeName(query).length < 2) {
     hideSuggestions();
+    if (activeSearchController) activeSearchController.abort();
     return;
   }
 
+  if (activeSearchController) activeSearchController.abort();
+  activeSearchController = new AbortController();
+
   try {
-    const matches = await searchGuests(query);
+    const matches = await searchGuests(query, activeSearchController.signal);
     if (guestNameInput.value.trim() === query) renderSuggestions(matches);
-  } catch (_) {
+  } catch (error) {
+    if (error.name === "AbortError") return;
     hideSuggestions();
+    showMessage(searchMessage, "No se pudo conectar con la lista. Intenta nuevamente.", "error");
   }
-}
-
-
-if (CONFIG.MODE === "local") {
-  localReady.catch(error => {
-    showMessage(searchMessage, error.message, "error");
-  });
 }
 
 guestNameInput.addEventListener("input", () => {
@@ -514,8 +233,11 @@ searchForm.addEventListener("submit", async (event) => {
   }
 
   try {
+    if (activeSearchController) activeSearchController.abort();
+    activeSearchController = new AbortController();
     setLoading(button, true, "Buscando…");
-    const matches = await searchGuests(name);
+
+    const matches = await searchGuests(name, activeSearchController.signal);
     if (!matches.length) {
       hideSuggestions();
       showMessage(searchMessage, "No encontramos una coincidencia. Prueba con tu nombre, apellido o una parte de ambos.", "error");
@@ -531,7 +253,7 @@ searchForm.addEventListener("submit", async (event) => {
     renderSuggestions(matches);
     showMessage(searchMessage, "Encontramos varias coincidencias. Selecciona tu nombre de la lista.", "info");
   } catch (error) {
-    showMessage(searchMessage, error.message, "error");
+    if (error.name !== "AbortError") showMessage(searchMessage, error.message, "error");
   } finally {
     setLoading(button, false);
   }
@@ -566,7 +288,7 @@ rsvpForm.addEventListener("submit", async (event) => {
       : "Tu respuesta quedó registrada. Gracias por acompañarnos con tu cariño aunque esta vez no puedas venir.";
     successCard.scrollIntoView({ behavior: "smooth", block: "center" });
   } catch (error) {
-    showMessage(rsvpMessage, error.message, "error");
+    showMessage(rsvpMessage, error.message || "No se pudo guardar tu respuesta.", "error");
   } finally {
     setLoading(button, false);
   }

@@ -7,7 +7,6 @@ let editingId = null;
 let pendingDeleteIds = [];
 let sortState = { key: "id", direction: "asc" };
 let adminKey = sessionStorage.getItem("matteo-rsvp-admin-key") || "";
-let jsonpSequence = 0;
 
 function escapeHtml(value = "") {
   return String(value)
@@ -30,37 +29,34 @@ function formatDate(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("es-CL");
 }
 
-function normalizeSortText(value = "") {
-  return String(value)
+function normalized(value) {
+  return String(value ?? "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .trim();
+    .toLowerCase();
 }
 
 function compareGuests(a, b, key, direction) {
-  const dir = direction === "desc" ? -1 : 1;
-  const av = a[key];
-  const bv = b[key];
-
-  const aEmpty = av == null || String(av).trim() === "";
-  const bEmpty = bv == null || String(bv).trim() === "";
-  if (aEmpty && !bEmpty) return 1;
-  if (!aEmpty && bEmpty) return -1;
-  if (aEmpty && bEmpty) return String(a.id).localeCompare(String(b.id), "es", { numeric: true });
+  const dir = direction === "asc" ? 1 : -1;
 
   if (key === "updatedAt") {
-    const at = new Date(av).getTime();
-    const bt = new Date(bv).getTime();
-    if (at !== bt) return (at - bt) * dir;
-  } else {
-    const result = normalizeSortText(av).localeCompare(normalizeSortText(bv), "es", {
-      sensitivity: "base",
-      numeric: true
-    });
-    if (result !== 0) return result * dir;
+    const av = a.updatedAt ? new Date(a.updatedAt).getTime() : null;
+    const bv = b.updatedAt ? new Date(b.updatedAt).getTime() : null;
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return (av - bv) * dir;
   }
 
-  return String(a.id).localeCompare(String(b.id), "es", { numeric: true });
+  const aValue = normalized(a[key]);
+  const bValue = normalized(b[key]);
+  if (!aValue && !bValue) return 0;
+  if (!aValue) return 1;
+  if (!bValue) return -1;
+
+  const result = aValue.localeCompare(bValue, "es", { numeric: true, sensitivity: "base" });
+  if (result !== 0) return result * dir;
+  return String(a.id).localeCompare(String(b.id), "es", { numeric: true }) * dir;
 }
 
 function getSortedDb() {
@@ -122,60 +118,52 @@ function getAdminKey() {
   return adminKey;
 }
 
-function jsonpRequest(params = {}) {
-  return new Promise((resolve, reject) => {
-    jsonpSequence += 1;
-    const callbackName = `rsvpAdminCallback${Date.now()}${jsonpSequence}`;
-    const script = document.createElement("script");
-    const url = new URL(CONFIG.GOOGLE_SCRIPT_URL);
-    let finished = false;
-
-    Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, String(value)));
-    url.searchParams.set("prefix", callbackName);
-
-    function cleanup() {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
-      try { delete window[callbackName]; } catch (_) { window[callbackName] = undefined; }
-      if (script.parentNode) script.parentNode.removeChild(script);
+function apiUrl(params = {}) {
+  const url = new URL(CONFIG.API_URL);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, String(value));
     }
-
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error("La conexión con Google Sheets está tardando demasiado."));
-    }, 25000);
-
-    window[callbackName] = function (data) {
-      if (finished) return;
-      cleanup();
-      resolve(data);
-    };
-
-    script.async = true;
-    script.type = "text/javascript";
-    script.onerror = () => {
-      if (finished) return;
-      cleanup();
-      reject(new Error("No se pudo conectar con Google Sheets. Si usas Brave, revisa Shields."));
-    };
-    script.src = url.toString();
-    document.body.appendChild(script);
   });
+  return url.toString();
+}
+
+async function apiGet(params = {}) {
+  const response = await fetch(apiUrl(params), {
+    method: "GET",
+    mode: "cors",
+    cache: "no-store",
+    headers: { "Accept": "application/json" }
+  });
+
+  if (!response.ok) throw new Error(`No se pudo conectar con Google Sheets (${response.status}).`);
+  const data = await response.json();
+  if (!data || data.ok !== true) throw new Error((data && data.error) || "No se pudo leer Google Sheets.");
+  return data;
+}
+
+async function apiPost(payload) {
+  const response = await fetch(CONFIG.API_URL, {
+    method: "POST",
+    mode: "cors",
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) throw new Error(`No se pudo completar la operación (${response.status}).`);
+  const data = await response.json();
+  if (!data || data.ok !== true) throw new Error((data && data.error) || "La operación no pudo completarse.");
+  return data;
 }
 
 async function loadDatabase() {
   try {
     const key = getAdminKey();
-    const data = await jsonpRequest({ accion: "admin_lista", clave: key });
-
-    if (!data || !data.ok) {
-      if (data && data.error === "Clave de administrador incorrecta") {
-        sessionStorage.removeItem("matteo-rsvp-admin-key");
-        adminKey = "";
-      }
-      throw new Error((data && data.error) || "No se pudo leer Google Sheets.");
-    }
+    const data = await apiGet({ accion: "admin_lista", clave: key });
 
     db = (data.invitados || []).map(g => ({
       id: String(g.id || ""),
@@ -188,54 +176,15 @@ async function loadDatabase() {
     $("#emptyState").textContent = "No hay invitados para mostrar.";
     render();
   } catch (error) {
+    if (/clave/i.test(error.message || "")) {
+      sessionStorage.removeItem("matteo-rsvp-admin-key");
+      adminKey = "";
+    }
     db = [];
     render();
     $("#emptyState").classList.remove("hidden");
     $("#emptyState").textContent = error.message;
   }
-}
-
-function postAdmin(fields) {
-  return new Promise((resolve, reject) => {
-    const frameName = `rsvpAdminPost_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-    const iframe = document.createElement("iframe");
-    const form = document.createElement("form");
-
-    iframe.name = frameName;
-    iframe.style.display = "none";
-    iframe.setAttribute("aria-hidden", "true");
-
-    form.method = "POST";
-    form.action = CONFIG.GOOGLE_SCRIPT_URL;
-    form.target = frameName;
-    form.style.display = "none";
-
-    Object.entries(fields).forEach(([name, value]) => {
-      const input = document.createElement("input");
-      input.type = "hidden";
-      input.name = name;
-      input.value = String(value ?? "");
-      form.appendChild(input);
-    });
-
-    document.body.appendChild(iframe);
-    document.body.appendChild(form);
-
-    try {
-      form.submit();
-    } catch (error) {
-      iframe.remove();
-      form.remove();
-      reject(error);
-      return;
-    }
-
-    setTimeout(() => {
-      iframe.remove();
-      form.remove();
-      resolve();
-    }, 1200);
-  });
 }
 
 function openModal(selector) {
@@ -279,8 +228,8 @@ function askDelete(ids) {
 document.querySelector("thead").addEventListener("click", (event) => {
   const button = event.target.closest(".sort-btn");
   if (!button) return;
-
   const key = button.dataset.sort;
+
   if (sortState.key === key) {
     sortState.direction = sortState.direction === "asc" ? "desc" : "asc";
   } else {
@@ -324,7 +273,7 @@ $("#editForm").addEventListener("submit", async (event) => {
   if (submit) submit.disabled = true;
 
   try {
-    await postAdmin({
+    await apiPost({
       accion: "admin_actualizar",
       clave: getAdminKey(),
       id: editingId,
@@ -347,10 +296,10 @@ $("#confirmDelete").addEventListener("click", async () => {
   button.disabled = true;
 
   try {
-    await postAdmin({
+    await apiPost({
       accion: "admin_borrar",
       clave: getAdminKey(),
-      ids: JSON.stringify(pendingDeleteIds)
+      ids: pendingDeleteIds
     });
     pendingDeleteIds = [];
     selectedIds.clear();
