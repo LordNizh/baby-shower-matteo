@@ -114,8 +114,84 @@ function setLoading(button, state, label) {
 }
 
 let jsonpSequence = 0;
+let bridgeSequence = 0;
 
-function jsonpRequest(baseUrl, params = {}) {
+// Safari/iOS puede ser más estricto con scripts JSONP de terceros.
+// En esos navegadores usamos un iframe oculto como puente con Apps Script.
+function prefersIframeBridge() {
+  const ua = navigator.userAgent || "";
+  const isiOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isSafari = /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|Chrome|Chromium|Android/i.test(ua);
+  return isiOS || isSafari;
+}
+
+function iframeBridgeRequest(baseUrl, params = {}) {
+  return new Promise((resolve, reject) => {
+    bridgeSequence += 1;
+    const requestId = `bridge${Date.now()}${bridgeSequence}`;
+    const iframe = document.createElement("iframe");
+    const url = new URL(baseUrl);
+    let finished = false;
+
+    Object.entries(params).forEach(([key, value]) => {
+      url.searchParams.set(key, String(value));
+    });
+    url.searchParams.set("bridge", "1");
+    url.searchParams.set("requestId", requestId);
+    url.searchParams.set("origin", window.location.origin);
+
+    iframe.style.display = "none";
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.src = url.toString();
+
+    function cleanup() {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      window.removeEventListener("message", onMessage);
+      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+    }
+
+    function onMessage(event) {
+      const payload = event.data;
+      if (!payload || payload.type !== "matteo-rsvp-bridge") return;
+      if (payload.requestId !== requestId) return;
+      cleanup();
+      resolve(payload.data);
+    }
+
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("No se pudo conectar con la lista de invitados."));
+    }, 20000);
+
+    window.addEventListener("message", onMessage);
+    iframe.addEventListener("error", () => {
+      cleanup();
+      reject(new Error("No se pudo conectar con la lista de invitados."));
+    });
+
+    document.body.appendChild(iframe);
+  });
+}
+
+async function readApi(baseUrl, params = {}) {
+  // Safari/iPhone: evitamos JSONP desde el inicio para no depender de
+  // protecciones de carga de scripts entre sitios.
+  if (prefersIframeBridge()) {
+    return iframeBridgeRequest(baseUrl, params);
+  }
+
+  // Resto de navegadores: JSONP sigue siendo más liviano. Si algo lo
+  // bloquea (por ejemplo un bloqueador), probamos el puente automáticamente.
+  try {
+    return await jsonpRequest(baseUrl, params, 7000);
+  } catch (_) {
+    return iframeBridgeRequest(baseUrl, params);
+  }
+}
+
+function jsonpRequest(baseUrl, params = {}, timeoutMs = 25000) {
   return new Promise((resolve, reject) => {
     jsonpSequence += 1;
 
@@ -142,7 +218,7 @@ function jsonpRequest(baseUrl, params = {}) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error("La conexión está tardando demasiado. Intenta nuevamente."));
-    }, 25000);
+    }, timeoutMs);
 
     window[callbackName] = function (data) {
       if (finished) return;
@@ -170,7 +246,7 @@ async function searchGuests(name) {
     return rankGuests(localGuests, name);
   }
 
-  const data = await jsonpRequest(CONFIG.GOOGLE_SCRIPT_URL, { buscar: name });
+  const data = await readApi(CONFIG.GOOGLE_SCRIPT_URL, { buscar: name });
 
   if (!data || !data.ok) {
     throw new Error((data && data.error) || "No se pudo realizar la búsqueda.");
@@ -263,7 +339,7 @@ function postRsvpWithHiddenForm(payload) {
 }
 
 async function getRsvpStatus(id) {
-  const data = await jsonpRequest(CONFIG.GOOGLE_SCRIPT_URL, {
+  const data = await readApi(CONFIG.GOOGLE_SCRIPT_URL, {
     accion: "estado",
     id
   });
